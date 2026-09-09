@@ -83,22 +83,19 @@ uploaded_file2 = st.file_uploader("2. 토출온도 엑셀 파일 업로드", typ
 
 if uploaded_file1 and uploaded_file2:
     if st.button("📊 보고서 생성 및 구글 시트 누적 저장"):
-        # 엑셀 및 기상 데이터 로드
         df1 = pd.read_excel(uploaded_file1)
         df2 = pd.read_excel(uploaded_file2)
         df_weather = fetch_outdoor_weather()
         
-        # 💡 엑셀 내부 파일에서 데이터 날짜 자동 추출
+        # 엑셀 파일 내 날짜 자동 감지
         data_date = None
         for col in df1.columns:
-            # 날짜 관련 컬럼 찾기
             if any(keyword in str(col) for keyword in ["일자", "날짜", "Date", "date", "시간"]):
                 parsed_dates = pd.to_datetime(df1[col], errors='coerce').dropna()
                 if not parsed_dates.empty:
                     data_date = parsed_dates.dt.strftime('%Y-%m-%d').iloc[0]
                     break
         
-        # 날짜 컬럼을 못 찾았을 경우 엑셀의 첫 번째 날짜 형식 데이터를 탐색
         if not data_date:
             for col in df1.columns:
                 first_val = str(df1[col].iloc[0])
@@ -109,7 +106,6 @@ if uploaded_file1 and uploaded_file2:
                     except Exception:
                         pass
         
-        # 기본 예외 처리 (파일 내 날짜 미발견 시)
         if not data_date:
             data_date = "2026-09-02"
         
@@ -117,29 +113,24 @@ if uploaded_file1 and uploaded_file2:
         for hour in range(7, 19):
             time_str = f"{hour:02d}:00"
             
-            # 1) 외기 데이터
             w_match = df_weather[df_weather["시간"] == time_str]
             out_temp = w_match["외기온도(℃)"].values[0] if not w_match.empty else 25.0
             out_hum = w_match["외기습도(%)"].values[0] if not w_match.empty else 60.0
             
-            # 2) 공장동 데이터
             factory_temp = 28.5 + (hour % 3)
             factory_hum = 65.0 - (hour % 5)
-            
-            # 3) 토출온도 데이터
             discharge_temp = 18.0 + (hour % 2)
             
-            # 계산 항목 (온도차, 체감온도, 단계)
             temp_diff = round(factory_temp - out_temp, 1)
             fl = calculate_feels_like(factory_temp, factory_hum)
             status = get_status(fl)
             
             records.append([
-                data_date, time_str,          # 실제 엑셀 데이터 일자 적용
-                out_temp, out_hum,           # 외기
-                factory_temp, factory_hum,   # 공장동
-                discharge_temp,              # 토출온도
-                temp_diff, fl, status        # 분석 결과
+                data_date, time_str, 
+                out_temp, out_hum, 
+                factory_temp, factory_hum, 
+                discharge_temp, 
+                temp_diff, fl, status
             ])
             
         columns = [
@@ -151,10 +142,9 @@ if uploaded_file1 and uploaded_file2:
         ]
         df_result = pd.DataFrame(records, columns=columns)
         
-        # 구글 시트에 저장
         if append_to_google_sheets(df_result):
             st.success(f"✅ [{data_date}] 데이터 분석 결과가 구글 시트에 성공적으로 누적되었습니다!")
             
-            # 셀 음영 스타일링 적용 후 표 출력
-            styled_df = df_result.style.applymap(style_status, subset=["체감온도 단계"])
+            # applymap -> map으로 변경하여 최신 Pandas 오류 수정
+            styled_df = df_result.style.map(style_status, subset=["체감온도 단계"])
             st.dataframe(styled_df, use_container_width=True)
