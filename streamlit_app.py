@@ -161,3 +161,6 @@ if uploaded_file1 and uploaded_file2:
             # applymap -> map 최신 Pandas 문법 수정
             styled_df = df_result.style.map(color_status, subset=['체감온도 단계'])
             st.dataframe(styled_df, use_container_width=True)
+            # applymap -> map 최신 Pandas 문법 수정
+            styled_df = df_result.style.map(color_status, subset=['체감온도 단계'])
+            st.dataframe(styled_df, use_container_width=True)
