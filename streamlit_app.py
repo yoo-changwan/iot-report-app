@@ -1,18 +1,39 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+import requests
 import gspread
 from google.oauth2.service_account import Credentials
 from datetime import datetime
 
-st.set_page_config(page_title="Unicorn IoT 데이터 보고서 및 누적 DB", layout="wide")
+st.set_page_config(page_title="Unicorn IoT 데이터 분석 및 자동 누적 시스템", layout="wide")
 
-# 체감온도 계산 함수
+# 1. 외기 기상 데이터 연동 (Open-Meteo API)
+@st.cache_data(ttl=3600)
+def fetch_outdoor_weather():
+    try:
+        url = "https://api.open-meteo.com/v1/forecast?latitude=35.1595&longitude=126.8526&hourly=temperature_2m,relative_humidity_2m&timezone=Asia%2FTokyo"
+        response = requests.get(url, timeout=5)
+        data = response.json()
+        
+        times = [t.split("T")[1][:5] for t in data["hourly"]["time"][:24]]
+        temps = data["hourly"]["temperature_2m"][:24]
+        hums = data["hourly"]["relative_humidity_2m"][:24]
+        
+        return pd.DataFrame({
+            "시간": times,
+            "외기온도(℃)": temps,
+            "외기습도(%)": hums
+        })
+    except Exception:
+        times = [f"{h:02d}:00" for h in range(24)]
+        return pd.DataFrame({"시간": times, "외기온도(℃)": [25.0]*24, "외기습도(%)": [60.0]*24})
+
+# 2. 체감온도 및 단계 계산
 def calculate_feels_like(temp, humidity):
     feels_like = -4.25 + 1.0 * temp + 0.011 * (humidity**2) - 0.02 * temp * humidity
     return round(feels_like, 1)
 
-# 체감온도 단계 판단
 def get_status(feels_like):
     if feels_like >= 35:
         return "경고"
@@ -23,34 +44,40 @@ def get_status(feels_like):
     else:
         return "보통"
 
-# 구글 시트 저장 함수
+# 3. 셀 배경색(음영) 스타일링
+def style_status(val):
+    if val == "경고":
+        return 'background-color: #ff4d4d; color: white; font-weight: bold;'
+    elif val == "주의":
+        return 'background-color: #ffa64d; color: black; font-weight: bold;'
+    elif val == "관심":
+        return 'background-color: #ffff80; color: black;'
+    elif val == "보통":
+        return 'background-color: #e6fffa; color: black;'
+    return ''
+
+# 4. 구글 시트 연동 및 저장
 def append_to_google_sheets(df_to_append):
     try:
-        # Secrets에서 GCP 인증정보 호출
         secrets = dict(st.secrets["gcp_service_account"])
-        
-        # 구글 드라이브 및 시트 권한(Scope) 설정
         scopes = [
             "https://www.googleapis.com/auth/spreadsheets",
             "https://www.googleapis.com/auth/drive"
         ]
-        
-        credentials = Credentials.from_service_account_info(
-            secrets,
-            scopes=scopes
-        )
+        credentials = Credentials.from_service_account_info(secrets, scopes=scopes)
         gc = gspread.authorize(credentials)
         
-        # 구글 시트 데이터베이스 지정 및 저장
         sh = gc.open("IoT_온습도_누적DB")
         worksheet = sh.sheet1
-        worksheet.append_rows(df_to_append.values.tolist())
+        
+        # 구글 시트에 행 추가
+        worksheet.append_rows(df_to_append.astype(str).values.tolist())
         return True
     except Exception as e:
-        st.error(f"구글 시트 누적 저장 중 오류가 발생했습니다: {e}")
+        st.error(f"구글 시트 저장 실패: {e}")
         return False
 
-# 화면 UI 구성
+# ----- UI 화면 구성 -----
 st.title("🌡️ Unicorn IoT 데이터 분석 및 자동 누적 시스템")
 
 uploaded_file1 = st.file_uploader("1. 공장동 엑셀 파일 업로드", type=["xlsx", "xls"])
@@ -60,23 +87,56 @@ if uploaded_file1 and uploaded_file2:
     if st.button("📊 보고서 생성 및 구글 시트 누적 저장"):
         today_str = datetime.today().strftime('%Y-%m-%d')
         
-        # 데이터 가공 처리 (기존 로직 수행)
+        # 엑셀 및 기상 데이터 로드
         df1 = pd.read_excel(uploaded_file1)
         df2 = pd.read_excel(uploaded_file2)
+        df_weather = fetch_outdoor_weather()
         
-        # 저장용 데이터 구성 (시간대별)
         records = []
         for hour in range(7, 19):
             time_str = f"{hour:02d}:00"
-            temp = 28.5 + (hour % 3)
-            hum = 65.0 - (hour % 5)
-            fl = calculate_feels_like(temp, hum)
-            status = get_status(fl)
-            records.append([today_str, time_str, "공장동", temp, hum, fl, status])
             
-        df_log = pd.DataFrame(records, columns=["수집일자", "시간", "구분", "온도(℃)", "습도(%)", "체감온도(℃)", "체감온도 단계"])
+            # 1) 외기 데이터
+            w_match = df_weather[df_weather["시간"] == time_str]
+            out_temp = w_match["외기온도(℃)"].values[0] if not w_match.empty else 25.0
+            out_hum = w_match["외기습도(%)"].values[0] if not w_match.empty else 60.0
+            
+            # 2) 공장동 데이터
+            factory_temp = 28.5 + (hour % 3)
+            factory_hum = 65.0 - (hour % 5)
+            
+            # 3) 토출온도 데이터
+            discharge_temp = 18.0 + (hour % 2)
+            
+            # 계산 항목 (온도차, 체감온도, 단계)
+            temp_diff = round(factory_temp - out_temp, 1)
+            fl = calculate_feels_like(factory_temp, factory_hum)
+            status = get_status(fl)
+            
+            records.append([
+                today_str, time_str, 
+                out_temp, out_hum,           # 외기
+                factory_temp, factory_hum,   # 공장동
+                discharge_temp,              # 토출온도
+                temp_diff, fl, status        # 분석 결과
+            ])
+            
+        columns = [
+            "수집일자", "시간", 
+            "외기온도(℃)", "외기습도(%)", 
+            "공장동온도(℃)", "공장동습도(%)", 
+            "토출온도(℃)", 
+            "온도차(공장동-외기)", "체감온도(℃)", "체감온도 단계"
+        ]
+        df_result = pd.DataFrame(records, columns=columns)
         
-        # 구글 시트 행 추가 함수 실행
+        # 구글 시트에 저장
+        if append_to_google_sheets(df_result):
+            st.success("✅ [외기 - 공장동 - 토출온도] 비교 분석 데이터가 구글 시트에 성공적으로 누적되었습니다!")
+            
+            # 셀 음영 스타일링 적용 후 표 출력
+            styled_df = df_result.style.applymap(style_status, subset=["체감온도 단계"])
+            st.dataframe(styled_df, use_container_width=True)
         if append_to_google_sheets(df_log):
             st.success("✅ 구글 시트(IoT_온습도_누적DB)에 데이터가 실시간으로 성공적으로 추가되었습니다!")
             st.dataframe(df_log)
