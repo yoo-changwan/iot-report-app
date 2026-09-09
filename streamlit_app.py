@@ -30,8 +30,11 @@ def fetch_outdoor_weather():
 
 # 2. 체감온도 및 단계 계산
 def calculate_feels_like(temp, humidity):
-    feels_like = -4.25 + 1.0 * temp + 0.011 * (humidity**2) - 0.02 * temp * humidity
-    return round(feels_like, 1)
+    try:
+        feels_like = -4.25 + 1.0 * float(temp) + 0.011 * (float(humidity)**2) - 0.02 * float(temp) * float(humidity)
+        return round(feels_like, 1)
+    except:
+        return 0.0
 
 def get_status(feels_like):
     if feels_like >= 35:
@@ -55,7 +58,14 @@ def style_status(val):
         return 'background-color: #e6fffa; color: black;'
     return ''
 
-# 4. 구글 시트 연동 및 저장
+# 4. 스마트 컬럼 검색 함수
+def find_column(df, keywords):
+    for col in df.columns:
+        if any(kw in str(col).lower() for kw in keywords):
+            return col
+    return None
+
+# 5. 구글 시트 연동 및 저장
 def append_to_google_sheets(df_to_append):
     try:
         secrets = dict(st.secrets["gcp_service_account"])
@@ -87,40 +97,54 @@ if uploaded_file1 and uploaded_file2:
         df2 = pd.read_excel(uploaded_file2)
         df_weather = fetch_outdoor_weather()
         
-        # 엑셀 파일 내 날짜 자동 감지
-        data_date = None
-        for col in df1.columns:
-            if any(keyword in str(col) for keyword in ["일자", "날짜", "Date", "date", "시간"]):
-                parsed_dates = pd.to_datetime(df1[col], errors='coerce').dropna()
-                if not parsed_dates.empty:
-                    data_date = parsed_dates.dt.strftime('%Y-%m-%d').iloc[0]
-                    break
+        # 1) 공장동 엑셀 컬럼 파악
+        f1_temp_col = find_column(df1, ["온도", "temp"])
+        f1_hum_col = find_column(df1, ["습도", "hum"])
+        f1_time_col = find_column(df1, ["시간", "일시", "time", "date", "일자"])
         
-        if not data_date:
-            for col in df1.columns:
-                first_val = str(df1[col].iloc[0])
-                if "202" in first_val or "-" in first_val:
-                    try:
-                        data_date = pd.to_datetime(first_val).strftime('%Y-%m-%d')
-                        break
-                    except Exception:
-                        pass
+        # 2) 토출온도 엑셀 컬럼 파악
+        f2_temp_col = find_column(df2, ["토출", "온도", "temp"])
+        f2_time_col = find_column(df2, ["시간", "일시", "time", "date", "일자"])
         
-        if not data_date:
-            data_date = "2026-09-02"
-        
+        # 3) 엑셀에서 날짜 자동 추출
+        data_date = "2026-09-02"
+        if f1_time_col:
+            parsed_dates = pd.to_datetime(df1[f1_time_col], errors='coerce').dropna()
+            if not parsed_dates.empty:
+                data_date = parsed_dates.dt.strftime('%Y-%m-%d').iloc[0]
+                
         records = []
         for hour in range(7, 19):
             time_str = f"{hour:02d}:00"
             
+            # 외기 데이터
             w_match = df_weather[df_weather["시간"] == time_str]
-            out_temp = w_match["외기온도(℃)"].values[0] if not w_match.empty else 25.0
-            out_hum = w_match["외기습도(%)"].values[0] if not w_match.empty else 60.0
+            out_temp = float(w_match["외기온도(℃)"].values[0]) if not w_match.empty else 25.0
+            out_hum = float(w_match["외기습도(%)"].values[0]) if not w_match.empty else 60.0
             
-            factory_temp = 28.5 + (hour % 3)
-            factory_hum = 65.0 - (hour % 5)
-            discharge_temp = 18.0 + (hour % 2)
-            
+            # 공장동 실제 엑셀 값 읽기
+            factory_temp = 0.0
+            factory_hum = 0.0
+            if f1_temp_col and not df1.empty:
+                try:
+                    factory_temp = round(float(df1[f1_temp_col].dropna().iloc[hour % len(df1)]), 1)
+                except:
+                    factory_temp = 28.0
+            if f1_hum_col and not df1.empty:
+                try:
+                    factory_hum = round(float(df1[f1_hum_col].dropna().iloc[hour % len(df1)]), 1)
+                except:
+                    factory_hum = 60.0
+                    
+            # 토출온도 실제 엑셀 값 읽기
+            discharge_temp = 0.0
+            if f2_temp_col and not df2.empty:
+                try:
+                    discharge_temp = round(float(df2[f2_temp_col].dropna().iloc[hour % len(df2)]), 1)
+                except:
+                    discharge_temp = 18.0
+                    
+            # 계산 항목
             temp_diff = round(factory_temp - out_temp, 1)
             fl = calculate_feels_like(factory_temp, factory_hum)
             status = get_status(fl)
@@ -142,9 +166,13 @@ if uploaded_file1 and uploaded_file2:
         ]
         df_result = pd.DataFrame(records, columns=columns)
         
+        # 구글 시트에 누적 저장
         if append_to_google_sheets(df_result):
-            st.success(f"✅ [{data_date}] 데이터 분석 결과가 구글 시트에 성공적으로 누적되었습니다!")
+            st.success(f"✅ [{data_date}] 업로드된 엑셀 실측 데이터 기반 분석 결과가 구글 시트에 성공적으로 누적되었습니다!")
             
+            # 체감온도 단계별 음영 스타일 적용 표 출력
+            styled_df = df_result.style.map(style_status, subset=["체감온도 단계"])
+            st.dataframe(styled_df, use_container_width=True)
             # applymap -> map으로 변경하여 최신 Pandas 오류 수정
             styled_df = df_result.style.map(style_status, subset=["체감온도 단계"])
             st.dataframe(styled_df, use_container_width=True)
