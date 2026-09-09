@@ -4,7 +4,6 @@ import numpy as np
 import requests
 import gspread
 from google.oauth2.service_account import Credentials
-from datetime import datetime
 
 st.set_page_config(page_title="Unicorn IoT 데이터 분석 및 자동 누적 시스템", layout="wide")
 
@@ -70,7 +69,6 @@ def append_to_google_sheets(df_to_append):
         sh = gc.open("IoT_온습도_누적DB")
         worksheet = sh.sheet1
         
-        # 구글 시트에 행 추가
         worksheet.append_rows(df_to_append.astype(str).values.tolist())
         return True
     except Exception as e:
@@ -85,12 +83,35 @@ uploaded_file2 = st.file_uploader("2. 토출온도 엑셀 파일 업로드", typ
 
 if uploaded_file1 and uploaded_file2:
     if st.button("📊 보고서 생성 및 구글 시트 누적 저장"):
-        today_str = datetime.today().strftime('%Y-%m-%d')
-        
         # 엑셀 및 기상 데이터 로드
         df1 = pd.read_excel(uploaded_file1)
         df2 = pd.read_excel(uploaded_file2)
         df_weather = fetch_outdoor_weather()
+        
+        # 💡 엑셀 내부 파일에서 데이터 날짜 자동 추출
+        data_date = None
+        for col in df1.columns:
+            # 날짜 관련 컬럼 찾기
+            if any(keyword in str(col) for keyword in ["일자", "날짜", "Date", "date", "시간"]):
+                parsed_dates = pd.to_datetime(df1[col], errors='coerce').dropna()
+                if not parsed_dates.empty:
+                    data_date = parsed_dates.dt.strftime('%Y-%m-%d').iloc[0]
+                    break
+        
+        # 날짜 컬럼을 못 찾았을 경우 엑셀의 첫 번째 날짜 형식 데이터를 탐색
+        if not data_date:
+            for col in df1.columns:
+                first_val = str(df1[col].iloc[0])
+                if "202" in first_val or "-" in first_val:
+                    try:
+                        data_date = pd.to_datetime(first_val).strftime('%Y-%m-%d')
+                        break
+                    except Exception:
+                        pass
+        
+        # 기본 예외 처리 (파일 내 날짜 미발견 시)
+        if not data_date:
+            data_date = "2026-09-02"
         
         records = []
         for hour in range(7, 19):
@@ -114,7 +135,7 @@ if uploaded_file1 and uploaded_file2:
             status = get_status(fl)
             
             records.append([
-                today_str, time_str, 
+                data_date, time_str,          # 실제 엑셀 데이터 일자 적용
                 out_temp, out_hum,           # 외기
                 factory_temp, factory_hum,   # 공장동
                 discharge_temp,              # 토출온도
@@ -132,11 +153,8 @@ if uploaded_file1 and uploaded_file2:
         
         # 구글 시트에 저장
         if append_to_google_sheets(df_result):
-            st.success("✅ [외기 - 공장동 - 토출온도] 비교 분석 데이터가 구글 시트에 성공적으로 누적되었습니다!")
+            st.success(f"✅ [{data_date}] 데이터 분석 결과가 구글 시트에 성공적으로 누적되었습니다!")
             
             # 셀 음영 스타일링 적용 후 표 출력
             styled_df = df_result.style.applymap(style_status, subset=["체감온도 단계"])
             st.dataframe(styled_df, use_container_width=True)
-        if append_to_google_sheets(df_log):
-            st.success("✅ 구글 시트(IoT_온습도_누적DB)에 데이터가 실시간으로 성공적으로 추가되었습니다!")
-            st.dataframe(df_log)
