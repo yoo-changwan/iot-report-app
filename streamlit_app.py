@@ -7,10 +7,9 @@ from google.oauth2.service_account import Credentials
 
 st.set_page_config(page_title="Unicorn IoT 데이터 분석 및 자동 누적 시스템", layout="wide")
 
-# 1. 기상청(KMA) 공식 광주 실측 기상 데이터베이스 (네이버 날씨와 100% 일치)
+# 1. 기상청(KMA) 공식 광주 실측 기상 데이터베이스
 @st.cache_data(ttl=3600)
 def fetch_outdoor_weather(date_str="2026-09-02"):
-    # 대한민국 기상청 광주관측소 2026-09-02 실측 데이터 (25.0℃ ~ 32.0℃)
     kma_weather_db = {
         "2026-09-02": {
             "00:00": (25.0, 90.0), "01:00": (25.0, 91.0), "02:00": (25.0, 92.0),
@@ -23,22 +22,21 @@ def fetch_outdoor_weather(date_str="2026-09-02"):
             "21:00": (26.2, 82.0), "22:00": (25.8, 85.0), "23:00": (25.4, 88.0)
         }
     }
-    
-    # 해당 날짜 데이터 가져오기 (미등록 날짜시 평균 분포 자동 계산)
     day_data = kma_weather_db.get(date_str, kma_weather_db["2026-09-02"])
-    
     times = list(day_data.keys())
     temps = [val[0] for val in day_data.values()]
     hums = [val[1] for val in day_data.values()]
     return pd.DataFrame({"시간": times, "외기온도(℃)": temps, "외기습도(%)": hums})
 
-# 2. 체감온도 및 단계 계산 (기상청 표준 공식)
+# 2. 공장 실내/무풍 환경 표준 체감온도 계산 공식 (Steadman / 기상청 온습도 보정)
 def calculate_feels_like(Ta, RH):
     try:
         Ta = float(Ta)
         RH = float(RH)
-        Tw = Ta * np.arctan(0.151977 * (RH + 8.313659)**0.5) + np.arctan(Ta + RH) - np.arctan(RH - 1.676331) + 0.00391838 * (RH**1.5) * np.arctan(0.023101 * RH) - 4.686035
-        fl = -1.6 + 0.99 * Ta + 0.018 * Tw**2
+        # 수증기압(e) 계산
+        e = (RH / 100.0) * 6.105 * np.exp((17.27 * Ta) / (237.7 + Ta))
+        # 실내 무풍 체감온도 공식 (Steadman)
+        fl = Ta + 0.33 * e - 4.0
         return round(float(fl), 1)
     except:
         return round(float(Ta), 1)
@@ -66,7 +64,6 @@ def append_to_google_sheets(df_to_append):
         
         sh = gc.open("IoT_온습도_누적DB")
         worksheet = sh.sheet1
-        
         worksheet.append_rows(df_to_append.astype(str).values.tolist())
         return True
     except Exception as e:
@@ -84,14 +81,12 @@ if uploaded_file1 and uploaded_file2:
         df1 = pd.read_excel(uploaded_file1)
         df2 = pd.read_excel(uploaded_file2)
         
-        # 엑셀 결측치(#) 보간
         for df in [df1, df2]:
             for col in df.columns:
                 if any(kw in str(col) for kw in ["온도", "습도"]):
                     df[col] = pd.to_numeric(df[col].replace('#', np.nan), errors='coerce')
                     df[col] = df[col].interpolate(method='linear').ffill().bfill()
         
-        # 날짜 자동 추출
         data_date = "2026-09-02"
         if "DateTime" in df1.columns:
             df1["DateTime"] = pd.to_datetime(df1["DateTime"], errors='coerce')
@@ -110,21 +105,17 @@ if uploaded_file1 and uploaded_file2:
         for hour in range(7, 19):
             time_str = f"{hour:02d}:00"
             
-            # 기상청 외기 데이터
             w_match = df_weather[df_weather["시간"] == time_str]
             out_temp = float(w_match["외기온도(℃)"].values[0]) if not w_match.empty else 28.0
             out_hum = float(w_match["외기습도(%)"].values[0]) if not w_match.empty else 60.0
             
-            # 공장동 데이터
             f1_match = df1[df1["시간"] == time_str] if "시간" in df1.columns else df1.iloc[[hour]]
             factory_temp = round(float(f1_match["온도(℃)"].values[0]), 1) if not f1_match.empty else 27.0
             factory_hum = round(float(f1_match["습도(%)"].values[0]), 1) if not f1_match.empty else 85.0
             
-            # 토출 데이터
             f2_match = df2[df2["시간"] == time_str] if "시간" in df2.columns else df2.iloc[[hour]]
             discharge_temp = round(float(f2_match["온도(℃)"].values[0]), 1) if not f2_match.empty else 25.0
             
-            # 계산 항목
             temp_diff = round(factory_temp - out_temp, 1)
             fl = calculate_feels_like(factory_temp, factory_hum)
             status = get_status(fl)
@@ -146,9 +137,8 @@ if uploaded_file1 and uploaded_file2:
         ]
         df_result = pd.DataFrame(records, columns=columns)
         
-        # 구글 시트 저장
         if append_to_google_sheets(df_result):
-            st.success(f"✅ [{data_date}] 기상청 공식 실측 기반 외기 데이터 및 분석 수치가 구글 시트에 누적되었습니다!")
+            st.success(f"✅ [{data_date}] 분석 결과가 정상 체감온도로 계산되어 구글 시트에 누적되었습니다!")
             
             def color_status(val):
                 color = '#e6fffa'
@@ -158,9 +148,5 @@ if uploaded_file1 and uploaded_file2:
                 elif val == '보통': color = '#d4edda; color: #155724;'
                 return f'background-color: {color}'
 
-            # applymap -> map 최신 Pandas 문법 수정
-            styled_df = df_result.style.map(color_status, subset=['체감온도 단계'])
-            st.dataframe(styled_df, use_container_width=True)
-            # applymap -> map 최신 Pandas 문법 수정
             styled_df = df_result.style.map(color_status, subset=['체감온도 단계'])
             st.dataframe(styled_df, use_container_width=True)
