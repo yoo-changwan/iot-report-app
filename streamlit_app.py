@@ -28,9 +28,16 @@ def append_to_google_sheets(df_to_append):
     try:
         # Secrets에서 GCP 인증정보 호출
         secrets = dict(st.secrets["gcp_service_account"])
+        
+        # 구글 드라이브 및 시트 권한(Scope) 설정
+        scopes = [
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive"
+        ]
+        
         credentials = Credentials.from_service_account_info(
             secrets,
-            scopes=["https://www.googleapis.com/auth/spreadsheets"]
+            scopes=scopes
         )
         gc = gspread.authorize(credentials)
         
