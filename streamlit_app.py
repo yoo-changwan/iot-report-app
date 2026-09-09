@@ -7,7 +7,7 @@ from google.oauth2.service_account import Credentials
 
 st.set_page_config(page_title="Unicorn IoT 데이터 분석 및 자동 누적 시스템", layout="wide")
 
-# 1. 기상청(KMA) 공식 광주 실측 기상 데이터베이스
+# 1. 기상청(KMA) 광주 관측소 실측 외기 DB (하남산단 기준)
 @st.cache_data(ttl=3600)
 def fetch_outdoor_weather(date_str="2026-09-02"):
     kma_weather_db = {
@@ -28,20 +28,20 @@ def fetch_outdoor_weather(date_str="2026-09-02"):
     hums = [val[1] for val in day_data.values()]
     return pd.DataFrame({"시간": times, "외기온도(℃)": temps, "외기습도(%)": hums})
 
-# 2. 공장 실내/무풍 환경 표준 체감온도 계산 공식 (Steadman / 기상청 온습도 보정)
-def calculate_feels_like(Ta, RH):
+# 2. 산업안전보건공단(KOSHA) / 고용노동부 공식 체감온도 계산 함수
+def calculate_kosha_feels_like(Ta, RH):
     try:
         Ta = float(Ta)
         RH = float(RH)
-        # 수증기압(e) 계산
-        e = (RH / 100.0) * 6.105 * np.exp((17.27 * Ta) / (237.7 + Ta))
-        # 실내 무풍 체감온도 공식 (Steadman)
-        fl = Ta + 0.33 * e - 4.0
+        # 습구온도(Tw) Stull 공식
+        Tw = Ta * np.arctan(0.151977 * (RH + 8.313659)**0.5) + np.arctan(Ta + RH) - np.arctan(RH - 1.676331) + 0.00391838 * (RH**1.5) * np.arctan(0.023101 * RH) - 4.686035
+        # KOSHA / 기상청 온열질환 체감온도 공식
+        fl = -1.6 + 0.99 * Ta + 0.018 * (Tw**2)
         return round(float(fl), 1)
     except:
         return round(float(Ta), 1)
 
-def get_status(feels_like):
+def get_kosha_status(feels_like):
     if feels_like >= 35.0:
         return "경고"
     elif feels_like >= 33.0:
@@ -71,7 +71,7 @@ def append_to_google_sheets(df_to_append):
         return False
 
 # ----- UI 화면 구성 -----
-st.title("🌡️ Unicorn IoT 데이터 분석 및 자동 누적 시스템")
+st.title("🌡️ Unicorn IoT 데이터 분석 및 자동 누적 시스템 (KOSHA 기준)")
 
 uploaded_file1 = st.file_uploader("1. 공장동 엑셀 파일 업로드", type=["xlsx", "xls"])
 uploaded_file2 = st.file_uploader("2. 토출온도 엑셀 파일 업로드", type=["xlsx", "xls"])
@@ -117,8 +117,8 @@ if uploaded_file1 and uploaded_file2:
             discharge_temp = round(float(f2_match["온도(℃)"].values[0]), 1) if not f2_match.empty else 25.0
             
             temp_diff = round(factory_temp - out_temp, 1)
-            fl = calculate_feels_like(factory_temp, factory_hum)
-            status = get_status(fl)
+            fl = calculate_kosha_feels_like(factory_temp, factory_hum)
+            status = get_kosha_status(fl)
             
             records.append([
                 data_date, time_str, 
@@ -138,7 +138,7 @@ if uploaded_file1 and uploaded_file2:
         df_result = pd.DataFrame(records, columns=columns)
         
         if append_to_google_sheets(df_result):
-            st.success(f"✅ [{data_date}] 분석 결과가 정상 체감온도로 계산되어 구글 시트에 누적되었습니다!")
+            st.success(f"✅ [{data_date}] KOSHA(산업안전보건공단) 가이드라인 기준 분석 결과가 구글 시트에 성공적으로 누적되었습니다!")
             
             def color_status(val):
                 color = '#e6fffa'
