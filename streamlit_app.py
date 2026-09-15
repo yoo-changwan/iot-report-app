@@ -5,7 +5,7 @@ import requests
 import gspread
 from google.oauth2.service_account import Credentials
 
-st.set_page_config(page_title="Unicorn IoT 데이터 분석 및 자동 누적 시스템", layout="wide")
+st.set_page_config(page_title="Unicorn IoT 데이터 분석 및 자동 누적 시스템 (WBGT 기준)", layout="wide")
 
 # 1. 기상청(KMA) 광주 관측소 실측 외기 DB (하남산단 기준)
 @st.cache_data(ttl=3600)
@@ -33,9 +33,7 @@ def calculate_wbgt(Ta, RH):
     try:
         Ta = float(Ta)
         RH = float(RH)
-        # Stull 공식을 이용한 자연습구온도(Tw) 계산
         Tw = Ta * np.arctan(0.151977 * (RH + 8.313659)**0.5) + np.arctan(Ta + RH) - np.arctan(RH - 1.676331) + 0.00391838 * (RH**1.5) * np.arctan(0.023101 * RH) - 4.686035
-        # WBGT 실내 공식: 0.7 * Tw + 0.3 * Ta
         wbgt = 0.7 * Tw + 0.3 * Ta
         return round(float(wbgt), 1)
     except:
@@ -118,7 +116,7 @@ if uploaded_file1 and uploaded_file2:
             
             temp_diff = round(factory_temp - out_temp, 1)
             wbgt = calculate_wbgt(factory_temp, factory_hum)
-            status = get_wbgt_status(wbgt)
+            status = str(get_wbgt_status(wbgt)).strip()  # 공백 제거
             
             records.append([
                 data_date, time_str, 
@@ -138,7 +136,7 @@ if uploaded_file1 and uploaded_file2:
         df_result = pd.DataFrame(records, columns=columns)
         
         if append_to_google_sheets(df_result):
-            st.success(f"✅ [{data_date}] WBGT 공식 적용 결과가 구글 시트에 누적되었습니다!")
+            st.success(f"✅ [{data_date}] WBGT 분석 결과가 구글 시트에 깔끔히 누적되었습니다!")
             
             def color_status(val):
                 color = '#e6fffa'
