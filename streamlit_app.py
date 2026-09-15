@@ -28,25 +28,25 @@ def fetch_outdoor_weather(date_str="2026-09-02"):
     hums = [val[1] for val in day_data.values()]
     return pd.DataFrame({"시간": times, "외기온도(℃)": temps, "외기습도(%)": hums})
 
-# 2. 산업안전보건공단(KOSHA) / 고용노동부 공식 체감온도 계산 함수
-def calculate_kosha_feels_like(Ta, RH):
+# 2. WBGT (0.7 * Tw + 0.3 * Ta) 실내 체감온도 계산 함수
+def calculate_wbgt(Ta, RH):
     try:
         Ta = float(Ta)
         RH = float(RH)
-        # 습구온도(Tw) Stull 공식
+        # Stull 공식을 이용한 자연습구온도(Tw) 계산
         Tw = Ta * np.arctan(0.151977 * (RH + 8.313659)**0.5) + np.arctan(Ta + RH) - np.arctan(RH - 1.676331) + 0.00391838 * (RH**1.5) * np.arctan(0.023101 * RH) - 4.686035
-        # KOSHA / 기상청 온열질환 체감온도 공식
-        fl = -1.6 + 0.99 * Ta + 0.018 * (Tw**2)
-        return round(float(fl), 1)
+        # WBGT 실내 공식: 0.7 * Tw + 0.3 * Ta
+        wbgt = 0.7 * Tw + 0.3 * Ta
+        return round(float(wbgt), 1)
     except:
         return round(float(Ta), 1)
 
-def get_kosha_status(feels_like):
-    if feels_like >= 35.0:
+def get_wbgt_status(wbgt):
+    if wbgt >= 31.0:
         return "경고"
-    elif feels_like >= 33.0:
+    elif wbgt >= 28.0:
         return "주의"
-    elif feels_like >= 31.0:
+    elif wbgt >= 25.0:
         return "관심"
     else:
         return "보통"
@@ -71,7 +71,7 @@ def append_to_google_sheets(df_to_append):
         return False
 
 # ----- UI 화면 구성 -----
-st.title("🌡️ Unicorn IoT 데이터 분석 및 자동 누적 시스템 (KOSHA 기준)")
+st.title("🌡️ Unicorn IoT 데이터 분석 및 자동 누적 시스템 (WBGT 기준)")
 
 uploaded_file1 = st.file_uploader("1. 공장동 엑셀 파일 업로드", type=["xlsx", "xls"])
 uploaded_file2 = st.file_uploader("2. 토출온도 엑셀 파일 업로드", type=["xlsx", "xls"])
@@ -117,15 +117,15 @@ if uploaded_file1 and uploaded_file2:
             discharge_temp = round(float(f2_match["온도(℃)"].values[0]), 1) if not f2_match.empty else 25.0
             
             temp_diff = round(factory_temp - out_temp, 1)
-            fl = calculate_kosha_feels_like(factory_temp, factory_hum)
-            status = get_kosha_status(fl)
+            wbgt = calculate_wbgt(factory_temp, factory_hum)
+            status = get_wbgt_status(wbgt)
             
             records.append([
                 data_date, time_str, 
                 out_temp, out_hum, 
                 factory_temp, factory_hum, 
                 discharge_temp, 
-                temp_diff, fl, status
+                temp_diff, wbgt, status
             ])
             
         columns = [
@@ -138,7 +138,7 @@ if uploaded_file1 and uploaded_file2:
         df_result = pd.DataFrame(records, columns=columns)
         
         if append_to_google_sheets(df_result):
-            st.success(f"✅ [{data_date}] KOSHA(산업안전보건공단) 가이드라인 기준 분석 결과가 구글 시트에 성공적으로 누적되었습니다!")
+            st.success(f"✅ [{data_date}] WBGT 공식 적용 결과가 구글 시트에 누적되었습니다!")
             
             def color_status(val):
                 color = '#e6fffa'
